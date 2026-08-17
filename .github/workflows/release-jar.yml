@@ -1,0 +1,111 @@
+name: Release jar
+
+# 自建发布流水线（cyberandao fork 专用，不属于上游 apache/rocketmq-exporter）。
+# 产出可直接被 middle-shells 的 cyber-rocketmq-exporter-install.sh 下载的 exec jar。
+#
+# 触发方式：
+#   - 打 tag：git tag v0.0.3-queue1 && git push origin v0.0.3-queue1
+#   - 手动：Actions 页面 Run workflow，填 version（不打 tag，只出 artifact 不发 release）
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（不含前缀 v），仅用于命名产物"
+        required: true
+        default: "0.0.0-dev"
+
+jobs:
+  build:
+    name: Build exec jar (JDK 8)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 目标机 Depends 是 openjdk-8/11，必须用 JDK 8 编译：
+      # 用高版本 JDK 配 source/target 1.8 只保证字节码版本，不阻止引用 Java 9+ API，
+      # 那样在 Java 8 运行时会 NoSuchMethodError。
+      - name: Set up JDK 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "8"
+          cache: maven
+
+      - name: Build
+        run: mvn -B clean package -DskipITs
+
+      - name: Verify bytecode target is Java 8
+        run: |
+          set -euo pipefail
+          SRC=$(ls target/rocketmq-exporter-*-exec.jar)
+          unzip -p "$SRC" BOOT-INF/classes/org/apache/rocketmq/exporter/task/MetricsCollectTask.class \
+            | od -An -t u1 -j 6 -N 2 | awk '{print $2}' > /tmp/major
+          MAJOR=$(cat /tmp/major)
+          echo "class major version: $MAJOR"
+          if [ "$MAJOR" != "52" ]; then
+            echo "expected major version 52 (Java 8), got $MAJOR"
+            exit 1
+          fi
+
+      - name: Package artifacts
+        id: pkg
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          SRC=$(ls target/rocketmq-exporter-*-exec.jar)
+          mkdir -p dist
+
+          # 带版本号的产物：可追溯到具体 release
+          VERSIONED="dist/rocketmq-exporter-${VERSION}-exec.jar"
+          cp "$SRC" "$VERSIONED"
+
+          # 固定名产物：配合 releases/latest/download/<name> 得到永不变的下载地址，
+          # 与 middle-shells / IaC 里既有的 "-latest" 约定一致。
+          LATEST="dist/rocketmq-exporter-latest-exec.jar"
+          cp "$SRC" "$LATEST"
+
+          cd dist
+          for f in *.jar; do
+            sha256sum "$f" > "$f.sha256sum"
+          done
+          ls -la
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rocketmq-exporter-${{ steps.pkg.outputs.version }}
+          path: dist/*
+          retention-days: 30
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "rocketmq-exporter ${{ steps.pkg.outputs.version }}"
+          body: |
+            Self-built RocketMQ exporter with queue-level consumer metrics.
+
+            Adds `rocketmq_queue_group_diff`, `rocketmq_queue_group_get_latency_by_storetime`
+            and `rocketmq_queue_consumer_offset`, labelled `cluster/broker/topic/group/queueid`.
+            Disabled by default; enable per topic via `--rocketmq.config.queueLevelTopics`.
+
+            Built with JDK 8 (bytecode major version 52), runs on openjdk-8/11.
+
+            Stable download URL (always the newest release):
+            https://github.com/${{ github.repository }}/releases/latest/download/rocketmq-exporter-latest-exec.jar
+          files: |
+            dist/rocketmq-exporter-*-exec.jar
+            dist/rocketmq-exporter-*-exec.jar.sha256sum
