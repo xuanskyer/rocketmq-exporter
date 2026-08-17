@@ -68,14 +68,10 @@ jobs:
           SRC=$(ls target/rocketmq-exporter-*-exec.jar)
           mkdir -p dist
 
-          # 带版本号的产物：可追溯到具体 release
+          # 只产带版本号的产物：下游按固定版本号引用，升级是显式动作，
+          # 不会因为这里发了新 release 就让线上机器悄悄换版本。
           VERSIONED="dist/rocketmq-exporter-${VERSION}-exec.jar"
           cp "$SRC" "$VERSIONED"
-
-          # 固定名产物：配合 releases/latest/download/<name> 得到永不变的下载地址，
-          # 与 middle-shells / IaC 里既有的 "-latest" 约定一致。
-          LATEST="dist/rocketmq-exporter-latest-exec.jar"
-          cp "$SRC" "$LATEST"
 
           cd dist
           for f in *.jar; do
@@ -104,8 +100,8 @@ jobs:
 
             Built with JDK 8 (bytecode major version 52), runs on openjdk-8/11.
 
-            Stable download URL (always the newest release):
-            https://github.com/${{ github.repository }}/releases/latest/download/rocketmq-exporter-latest-exec.jar
+            Download URL for this exact version:
+            https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/rocketmq-exporter-${{ steps.pkg.outputs.version }}-exec.jar
           files: |
             dist/rocketmq-exporter-*-exec.jar
             dist/rocketmq-exporter-*-exec.jar.sha256sum
